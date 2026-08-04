@@ -30,46 +30,57 @@ function toCsv(rows) {
 }
 
 function writeCsvWithBom(filePath, rows) {
-  if (!rows.length) return;
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  if (!rows.length) return;
   fs.writeFileSync(filePath, "\uFEFF" + toCsv(rows), "utf8");
 }
 
-async function scrapeSongs(page, cc, marketName) {
-  await page.goto(`https://charts.spotify.com/charts/view/regional-${cc}-daily/latest`, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector("table tbody tr", { timeout: 20000 }).catch(() => null);
-
-  return page.$$eval("table tbody tr", (rows, ctx) =>
-    rows.map((r) => {
-      const cells = r.querySelectorAll("td");
-      if (cells.length < 3) return null;
-      const rankSpans = cells[1]?.querySelectorAll("span") || [];
-      const titleEl = cells[2]?.querySelector('span[class*="StyledTruncatedTitle"]');
-      const artistEls = cells[2]?.querySelectorAll('a[class*="StyledHyperlink"]') || [];
-      const trackLink = cells[2]?.querySelector('a[href*="/track/"]');
-      const img = cells[2]?.querySelector("img");
-      return {
-        captured_date: ctx.today,
-        market: ctx.cc,
-        market_name: ctx.marketName,
-        rank: rankSpans[0]?.textContent.trim() || "",
-        rank_change: rankSpans[1]?.textContent.trim() || "",
-        track_name: titleEl ? titleEl.textContent.trim() : "",
-        artist_names: Array.from(artistEls).map((a) => a.textContent.trim()).join("; "),
-        artist_spotify_ids: Array.from(artistEls)
-          .map((a) => (a.getAttribute("href") || "").match(/\/artist\/([A-Za-z0-9]+)/)?.[1] || "")
-          .filter(Boolean)
-          .join("; "),
-        track_spotify_id: (trackLink?.getAttribute("href") || "").match(/\/track\/([A-Za-z0-9]+)/)?.[1] || "",
-        image_url: img ? img.src : "",
-      };
-    }).filter(Boolean), { today, cc, marketName }
-  );
+async function debugCapture(page, label) {
+  fs.mkdirSync("debug", { recursive: true });
+  await page.screenshot({ path: `debug/${label}.png`, fullPage: true }).catch(() => null);
+  fs.writeFileSync(`debug/${label}.html`, await page.content().catch(() => ""), "utf8");
 }
 
-async function scrapeArtists(page, cc, marketName) {
-  await page.goto(`https://charts.spotify.com/charts/view/artist-${cc}-weekly/latest`, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector("table tbody tr", { timeout: 20000 }).catch(() => null);
+async function extractRows(page, url, rowMapperName, ctx) {
+  await page.goto(url, { waitUntil: "networkidle", timeout: 45000 });
+  const found = await page
+    .waitForSelector("table tbody tr", { timeout: 25000 })
+    .then(() => true)
+    .catch(() => false);
+
+  if (!found) {
+    await debugCapture(page, `${ctx.cc}_${rowMapperName}`);
+    return [];
+  }
+
+  if (rowMapperName === "songs") {
+    return page.$$eval("table tbody tr", (rows, ctx) =>
+      rows.map((r) => {
+        const cells = r.querySelectorAll("td");
+        if (cells.length < 3) return null;
+        const rankSpans = cells[1]?.querySelectorAll("span") || [];
+        const titleEl = cells[2]?.querySelector('span[class*="StyledTruncatedTitle"]');
+        const artistEls = cells[2]?.querySelectorAll('a[class*="StyledHyperlink"]') || [];
+        const trackLink = cells[2]?.querySelector('a[href*="/track/"]');
+        const img = cells[2]?.querySelector("img");
+        return {
+          captured_date: ctx.today,
+          market: ctx.cc,
+          market_name: ctx.marketName,
+          rank: rankSpans[0]?.textContent.trim() || "",
+          rank_change: rankSpans[1]?.textContent.trim() || "",
+          track_name: titleEl ? titleEl.textContent.trim() : "",
+          artist_names: Array.from(artistEls).map((a) => a.textContent.trim()).join("; "),
+          artist_spotify_ids: Array.from(artistEls)
+            .map((a) => (a.getAttribute("href") || "").match(/\/artist\/([A-Za-z0-9]+)/)?.[1] || "")
+            .filter(Boolean)
+            .join("; "),
+          track_spotify_id: (trackLink?.getAttribute("href") || "").match(/\/track\/([A-Za-z0-9]+)/)?.[1] || "",
+          image_url: img ? img.src : "",
+        };
+      }).filter(Boolean), ctx
+    );
+  }
 
   return page.$$eval("table tbody tr", (rows, ctx) =>
     rows.map((r) => {
@@ -88,27 +99,36 @@ async function scrapeArtists(page, cc, marketName) {
         artist_spotify_id: (artistLink?.getAttribute("href") || "").match(/\/artist\/([A-Za-z0-9]+)/)?.[1] || "",
         image_url: img ? img.src : "",
       };
-    }).filter(Boolean), { today, cc, marketName }
+    }).filter(Boolean), ctx
   );
 }
 
 async function main() {
-  const browser = await chromium.launch();
-  const page = await browser.newPage({
-    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+  const browser = await chromium.launch({
+    args: ["--disable-blink-features=AutomationControlled"],
   });
+  const context = await browser.newContext({
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    viewport: { width: 1366, height: 900 },
+    locale: "en-US",
+  });
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+  });
+  const page = await context.newPage();
 
   const allSongs = [];
   const allArtists = [];
 
   for (const [cc, marketName] of Object.entries(MARKETS)) {
+    const ctx = { today, cc, marketName };
     try {
-      allSongs.push(...(await scrapeSongs(page, cc, marketName)));
+      allSongs.push(...(await extractRows(page, `https://charts.spotify.com/charts/view/regional-${cc}-daily/latest`, "songs", ctx)));
     } catch (e) {
       console.warn(`[warn] ${cc} songs 抓取失敗：${e.message}`);
     }
     try {
-      allArtists.push(...(await scrapeArtists(page, cc, marketName)));
+      allArtists.push(...(await extractRows(page, `https://charts.spotify.com/charts/view/artist-${cc}-weekly/latest`, "artists", ctx)));
     } catch (e) {
       console.warn(`[warn] ${cc} artists 抓取失敗：${e.message}`);
     }
