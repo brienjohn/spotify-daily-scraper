@@ -7,12 +7,12 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/你的使用者名稱/spotify-daily-scraper/run_and_push.sh</string>
+    <string>/Users/brienjohn/spotify-daily-scraper/run_and_push.sh</string>
   </array>
   <key>StandardOutPath</key>
-  <string>/Users/你的使用者名稱/spotify-daily-scraper/scrape.log</string>
+  <string>/Users/brienjohn/spotify-daily-scraper/scrape.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/你的使用者名稱/spotify-daily-scraper/scrape.log</string>
+  <string>/Users/brienjohn/spotify-daily-scraper/scrape.log</string>
   <key>StartCalendarInterval</key>
   <array>
     <dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
