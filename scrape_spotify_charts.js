@@ -19,6 +19,8 @@ const MARKETS = {
 
 const DAILY_BACKFILL_DAYS = 5;
 const WEEKLY_BACKFILL_WEEKS = 4;
+// 回溯模式專用：要抓到多早（含）為止，平常排程（current 模式）不受影響，還是只補最近幾天/週
+const BACKFILL_TARGET_DATE = "2026-01-01";
 const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
 function shuffle(arr) {
@@ -79,6 +81,18 @@ function findMissingDates(anchorDate, count, stepDays, filePrefix) {
   const missing = [];
   for (let i = 0; i < count; i++) {
     const dateStr = addDaysUTC(anchorDate, -i * stepDays);
+    if (!fs.existsSync(`data/${filePrefix}_${dateStr}.csv`)) missing.push(dateStr);
+  }
+  return missing;
+}
+
+// 回溯模式用：不設固定天數/週數上限，一路跳到 BACKFILL_TARGET_DATE 為止
+function findMissingDatesUntilTarget(anchorDate, stepDays, filePrefix) {
+  const missing = [];
+  const MAX_STEPS = 400; // 安全上限，防呆用
+  for (let i = 0; i < MAX_STEPS; i++) {
+    const dateStr = addDaysUTC(anchorDate, -i * stepDays);
+    if (dateStr < BACKFILL_TARGET_DATE) break;
     if (!fs.existsSync(`data/${filePrefix}_${dateStr}.csv`)) missing.push(dateStr);
   }
   return missing;
@@ -156,6 +170,14 @@ async function humanPause() {
 }
 
 async function main() {
+  const mode = process.argv.includes("--mode") ? process.argv[process.argv.indexOf("--mode") + 1] : "current";
+  const maxTargetsIdx = process.argv.indexOf("--max-targets");
+  // backfill 模式下，這是「最多處理幾天/幾週」的上限（不是市場數）：
+  // 一天/一週要依序查 10 個市場，每個市場間隔 3-15 秒（刻意模擬真人，不能加速），
+  // 預設 40 大概對應跑 30-40 分鐘，可以自己視情況調大
+  const maxTargets = maxTargetsIdx > -1 ? parseInt(process.argv[maxTargetsIdx + 1], 10) : 40;
+  console.log(`模式：${mode}${mode === "backfill" ? `（目標回溯到 ${BACKFILL_TARGET_DATE}，這次最多處理 ${maxTargets} 天/週）` : ""}`);
+
   const browser = await chromium.launch({ headless: false, channel: "chrome" });
   const context = await browser.newContext({
     storageState: "auth.json",
@@ -170,7 +192,11 @@ async function main() {
   // ---- Daily Songs ----
   const dailyAnchor = await getLatestPublishedDate(page, "https://charts.spotify.com/charts/view/regional-global-daily/latest");
   console.log(`Daily 最新可用日期：${dailyAnchor}`);
-  const missingDaily = findMissingDates(dailyAnchor, DAILY_BACKFILL_DAYS, 1, "spotify_daily_songs");
+  const allMissingDaily =
+    mode === "backfill"
+      ? findMissingDatesUntilTarget(dailyAnchor, 1, "spotify_daily_songs")
+      : findMissingDates(dailyAnchor, DAILY_BACKFILL_DAYS, 1, "spotify_daily_songs");
+  const missingDaily = mode === "backfill" ? allMissingDaily.slice(0, maxTargets) : allMissingDaily;
 
   if (!missingDaily.length) {
     console.log("Daily Songs 近幾天資料都齊全。");
@@ -190,11 +216,23 @@ async function main() {
       console.log(`[${date}] Songs 寫入 ${allSongs.length} 筆`);
     }
   }
+  if (mode === "backfill") {
+    const remaining = Math.max(0, allMissingDaily.length - missingDaily.length);
+    if (remaining === 0) {
+      console.log(`[backfill] ✅ Daily Songs 全部抓完了——已經回溯到 ${BACKFILL_TARGET_DATE}`);
+    } else {
+      console.log(`[backfill] Daily Songs 這次處理 ${missingDaily.length} 天，還有 ${remaining} 天留到下次`);
+    }
+  }
 
   // ---- Weekly Artists ----
   const weeklyAnchor = await getLatestPublishedDate(page, "https://charts.spotify.com/charts/view/artist-global-weekly/latest");
   console.log(`Weekly 最新可用日期：${weeklyAnchor}`);
-  const missingWeekly = findMissingDates(weeklyAnchor, WEEKLY_BACKFILL_WEEKS, 7, "spotify_weekly_artists");
+  const allMissingWeekly =
+    mode === "backfill"
+      ? findMissingDatesUntilTarget(weeklyAnchor, 7, "spotify_weekly_artists")
+      : findMissingDates(weeklyAnchor, WEEKLY_BACKFILL_WEEKS, 7, "spotify_weekly_artists");
+  const missingWeekly = mode === "backfill" ? allMissingWeekly.slice(0, maxTargets) : allMissingWeekly;
 
   if (!missingWeekly.length) {
     console.log("Weekly Artists 近幾週資料都齊全。");
@@ -212,6 +250,14 @@ async function main() {
       }
       writeCsvWithBom(`data/spotify_weekly_artists_${date}.csv`, allArtists);
       console.log(`[${date}] Artists 寫入 ${allArtists.length} 筆`);
+    }
+  }
+  if (mode === "backfill") {
+    const remaining = Math.max(0, allMissingWeekly.length - missingWeekly.length);
+    if (remaining === 0) {
+      console.log(`[backfill] ✅ Weekly Artists 全部抓完了——已經回溯到 ${BACKFILL_TARGET_DATE}`);
+    } else {
+      console.log(`[backfill] Weekly Artists 這次處理 ${missingWeekly.length} 週，還有 ${remaining} 週留到下次`);
     }
   }
 
