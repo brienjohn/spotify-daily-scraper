@@ -7,7 +7,7 @@ if ! curl -s --max-time 10 -o /dev/null -w "%{http_code}" https://charts.spotify
   exit 0
 fi
 
-node scrape_spotify_charts.js
+/usr/local/bin/node scrape_spotify_charts.js
 
 git add data/
 if ! git diff --staged --quiet; then
