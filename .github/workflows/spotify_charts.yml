@@ -1,6 +1,9 @@
 name: Scrape Spotify Charts
 
 on:
+  schedule:
+    # 每天 UTC 05:00 = 台北 13:00，讓 Spotify 當天的榜單資料有足夠時間更新
+    - cron: "0 5 * * *"
   workflow_dispatch: {}
 
 jobs:
@@ -14,6 +17,8 @@ jobs:
       - run: npm install
       - run: npx playwright install --with-deps chrome
       - run: sudo apt-get update && sudo apt-get install -y xvfb
+      - name: 還原登入狀態
+        run: echo '${{ secrets.SPOTIFY_AUTH_JSON }}' > auth.json
       - run: xvfb-run -a node scrape_spotify_charts.js
       - name: Upload debug artifacts
         if: always()
